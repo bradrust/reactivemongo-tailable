@@ -69,7 +69,7 @@ class HomeController @Inject()(cc: ControllerComponents,
         .documentSource(err = Cursor.DoneOnError())
         .mapAsync(1)(x => {
           val someDbMessage = x.getAsOpt[BSONString]("message").orElse(Option(BSONString("whatever"))).map(_.toString)
-          println(s"mid-stream peek ${someDbMessage}/${lookFor}/${someDbMessage.map(_.contains(lookFor)).getOrElse(false)}")
+          // println(s"mid-stream peek ${someDbMessage}/${lookFor}/${someDbMessage.map(_.contains(lookFor)).getOrElse(false)}")
           if (someDbMessage.map(_.contains(lookFor)).getOrElse(false)) {
             println(s"server-side swallowing ${lookFor}")
             // Future.successful(x)

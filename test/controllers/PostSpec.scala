@@ -45,7 +45,7 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
         // somewhat randomly, post a message to the capped collection within a minute
         system.scheduler.scheduleWithFixedDelay(
           // (1000L + 10000 * Math.random()).milliseconds,
-          5.seconds,
+          10.seconds,
           (60000 * Math.random() * .5).milliseconds)(task)
       })
 
