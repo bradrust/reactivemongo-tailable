@@ -1,5 +1,7 @@
 package controllers
 
+import java.time.OffsetDateTime
+
 import akka.actor.ActorSystem
 import akka.stream.Materializer
 import akka.util.Timeout
@@ -12,27 +14,169 @@ import play.api.test.Helpers._
 import play.api.test._
 import play.modules.reactivemongo.ReactiveMongoApi
 
+import reactivemongo.api._
+import reactivemongo.api.bson._
+import reactivemongo.akkastream.cursorProducer
+
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
 import scala.util.Try
 
 class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures with Results {
 
-  "tailable cursor" should {
-    "should show a ton of messages in mongodb in a minute or two" in {
+  "cursor-spin" should {
 
-      lazy val system: ActorSystem = app.injector.instanceOf[ActorSystem]
-      implicit lazy val executionContext = app.injector.instanceOf[ExecutionContext]
-      implicit lazy val mat: Materializer = app.injector.instanceOf[Materializer]
+    val notificationCollectionName = "notifications"
 
-      lazy val mongo = app.injector.instanceOf[ReactiveMongoApi]
-      lazy val home = app.injector.instanceOf[HomeController]
+    /**
+     * sequencediagram.org URL for some swimlane views of this...
+     *
+     * https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgPSyKQCGwMAQpAGbowAiqAxvALaR7DIBQPpzYOmgBJPGBClwIAF6REPZqi6JU4aAHVEYeXx4ATcqQBGpZDFhqogkMr4ChGAEoBZPkpVroTsvt08xCSlZeQBaAD5LcGtQZQAufVVsaCVoyBs7QNBguUQIqJjbPDjmEnIYVMLM8WzpXPyrdNjizmQkCtJsbEh9FMaMvD08VApoVAA3eVEayTr5ABoCpqK4lM7u3srl5WghaDK-DFI8XoB3bQoMNmOQbHhwcr4fUkOI1zjgUhAH4yh56FIpy+wAYRh44FQqGS8C432gNBAKGA0A4yGQpAA5jB8OZEBR9DxhqMJlNXIt+s1VqAMQALZGlMjNMY0FJINAoaAAChIaCQzGxXFaIEm8OEbRIAEoADp4GGgdSkaD6FjsTjIkDIeH4KTgACe0GM+uANJgz0OuzMAGseK4GmkBqsANrARACSAAXX2ADpSF7mF6AOKceQgZgARXg8l1lHg30OABIbS47VVitBna7+Z7ED6-YHg9pw5HENHY+AE0mU9s0xm3dnc-6g3gQ0WozG4-JE7bIhSVumXXXvb7GwXQxG22WK5wCTwtDo8j37ZToDj5MjlawOFxCSMYCSMHPLvMzfI4sp+QClSqt+rNau8T1-pBJiXjfgMWNuq6KJrjr1zJAbCasMiDXOAlaLqmqwHFem5qhBJ6INBkDINgyjmLBqrboeYSQdWqz3uu17wd2SwOvsviYTeCG+KeFGoehMAblhwB8EAA
+     *
+     * In general,
+     *   1. start by dropping the collection and creating a new one for cleanliness.   The collection
+     *      is created as a capped collection.
+     *   2. start a timer where after 10 seconds, start inserting documents into the capped collection
+     *   3. start a read of the capped collection.
+     *   4. notice that before a document is written to the collection, the RM (or something) system is
+     *      furiously creating cursors.   Once a document is written to the collection, the reading operates
+     *      as expected and no more furious cursor creation happens
+     */
+    "show some tight cursor producing logic prior to an documents inserted into collection" in {
 
-      val controller             = home
+      val system: ActorSystem = app.injector.instanceOf[ActorSystem]
+      implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+      implicit val mat: Materializer = app.injector.instanceOf[Materializer]
+      val mongo = app.injector.instanceOf[ReactiveMongoApi]
 
+      //
+      // possibly drop the capped collection (maybe it exists, maybe it doesn't)
+      //
+      val db = Await.result(mongo.database, 5.seconds)
+      val drop = db.collection(notificationCollectionName).drop()
+      Await.result(drop, 5.seconds)
+
+      //
+      // this collection Future is how I am creating a collection in my classes and flatMap-ing when using it
+      //
+      def collection: Future[reactivemongo.api.bson.collection.BSONCollection] = {
+        val rv = (for {
+          db <- mongo.database
+          collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
+          rv <- collection.stats().flatMap(stats => {
+            if (!stats.capped) {
+              collection.convertToCapped(5 * 1024 * 1024, Option(5000))
+                .map(_ => collection)
+            } else {
+              Future.successful(collection)
+            }
+          })
+        } yield {
+          rv
+        }).recoverWith {
+          case _ =>
+            // collection probably doesn't exist so lets go make it.
+            mongo.database.flatMap(db => {
+              def collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
+              collection.createCapped(5 * 1024 * 1024, Option(5000)).map(_ => collection)
+            })
+        }
+        rv
+      }
+      Await.result(collection, 10.seconds)
+
+      //
+      // a Task on a timer that inserts documents into the capped collection (The Writer)
+      //
       val task = new Runnable {
         override def run(): Unit = {
-          val postResult: Future[Result] = controller.post().apply(
+          implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+          val i = collection
+            .map(c => {
+              c.insert(ordered = true).one(
+                BSONDocument(
+                  "id" -> s"prime",
+                  "message" -> "whatever",
+                  "createdAt" -> OffsetDateTime.now()
+                ))
+          })
+          Await.result(i, 5.seconds)
+        }
+      }
+
+      //
+      // schedule some inserts but after 10 seconds so our "Reader" is actively reading/waiting for data
+      //
+      system.scheduler.scheduleWithFixedDelay(
+        10.seconds,
+        (10000 * Math.random()).milliseconds)(task)
+
+      //
+      // wait for capped collection data (The Reader)
+      //
+      // NOTE/PROBLEM: until a message is placed into the capped collection, there is a tight cursor
+      // producing effort happening identified by this log... [trace] r.a.c.GenericQueryBuilder$
+      //
+      val x = collection.flatMap(c => {
+        c.find(BSONDocument("createdAt" -> BSONDocument("$gte" -> OffsetDateTime.now())))
+          .tailable
+          .awaitData
+          .cursor[BSONDocument]()
+          .documentSource()
+          .runWith(akka.stream.scaladsl.Sink.foreach { doc =>
+            println(s"- ${BSONDocument pretty doc}")
+          })
+      })
+      Await.result(x, 60.seconds)
+    }
+
+    /**
+     * sequencediagram.org URL for some swimlane views of this...
+     *
+     * https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgPSyKQCGwMAQpAGbowAiqAxvALaR7DIBQPpzYOmgBJPGBClwIAF6REPACblSAI1LIYsVOCiCQqPP0HCASgFkezQ8EQ7oAQQDWT0lZt3w0U2UXz3XJ7QAOqIYP6qqPB4yogAntCUdgDumgqR0bEJAKIAHhSIeFLZAG6cwHxiElKy8gC0AHzaupD6hgBcinbY0NYtbUZVoDVyiI3NeqAdzCTkMH2TBoPiw9Kj4zqLHZzISPOk2NiQir2brVNGPHioFNCoZRhDkmvyADQT50vtvQdHJwufQx8JKoVL1Bo+Uh+RDtTCYbJ3DDgQwAczq0jKJ1mih4kOhjQs7WApBA4DUUFe0FIyRJwAYKj4KLs8B6yTCt1IMWg2KpXOw8FU0mQAAseHkCkVwKVyo1QuEYdAUZx5HNoJAylweHKCht+hdvvg0sBoIoWOxyrjzLqtnhvjzTawOJqLATfPI7ZBkNhDJoTWanRU8eCQWCFXCEQAiaVcCM8TgnPjXW73eTeN2IV7i+SS6PAb6qVqkeC+iNiCWQYAR6DJUleaRsMDQKB4FHAYUEUAcAA6eDuNCw8NOeDwgLwlJE1c5xqE0HwBUQLOAPc5WM9xMQ0+FMGSwp0MAjqhSaW5vnwKJ7HGQyFISuQTdQqGwEZ7PYAKqg-dA2+Rx9AnLWvy3XokDQDAd04WdjWxZBl2gCNvRANBe1wXQqwdc0uGrYUQGYYU1S4eQYK4ICAQGaAaDsNheUcFxSCwKJEGYSAe2QWwyCo8p4mgdRNBOQwvxADhoAACgANgABmgTRrBiZAAEo+B4EM0ldKF3XDRF7xbdEQExE8oVxdMCXMIkSTJQVIEpalaXpYkeGcVxrVHdpSBoApoAkqTWkMRRkEpNlwjghCkOgFDwFjF0mjOAYPShP1HXKETgv4sKFMioMFXtf0LQy1ToW+ZAaV0UFQtQRCUtrQy1LGBplPdaA8iY7ALiIZFNCUo9wQy9oR3ySCVQuAdsiq-EIRM4lSXJSyqRpMBbLcZFH2gaJQC8S9ryVWc8CNY4rhuGAUwwCx3mi-UBJRYVjRmMhBtQftWBQdAiOEkg0CQJitoobbdJgOgMF2Eg5J7FbSSpeKMONRCtp2nFIo+GLoAAbVsARIAAXW5AA6UhMeYTGAHFlTCZgAEV4HkOJKHgUloQAEktJyEeRxBUYxxBsdxgmiZwsmKapmn5HpuHTq+JGUaYtmObxwmR2J3n4n58A6YZqK9VF5nWaxnHpe50nyYV6mlcFuMYjFfJs2KDVgFldl6qVWXVXVC1tXBeGzsNeRjXQgM9uTB402qk61Y6aBrmSQDyDBkdw4dANZzvD2N2OKzdEcEwUB7fASh0PTHwGmBrkQNgpHAOJMcZZlWVt3lVzildQoFIVRSzQpLZlBoXYVe387VK2tVtmq3dFxOvey50rVVm1YpOb2con7qTy9H0YFn50jNqzqw0HKMrdjeNoB4IA
+     *
+     * In general,
+     *   1. start by dropping the collection and creating a new one for cleanliness.   The collection
+     *      is created as a capped collection.
+     *   2. start a timer where after 10 seconds, start simulating an external system POST-ing events
+     *      that are inserted into the capped collection
+     *   3. start a read of the capped collection with a long lived GET (browser SSE in real life)
+     *   4. notice operations are normal
+     *   5. after a timeout (60 seconds or so usually), I write a "poison pill" document to the collection
+     *      so that the Reader (tailable, awaitData) actor can throw an Exception to interrupt the
+     *      process.  If I don't do that manually, the internet components (google load balancer) in between
+     *      will kill the GET connection but the reactivemongo Cursor will continue reading forever (which
+     *      is expected in general)
+     *   6. Reader reads the "poison pill" and throws an Exception killing the cursor and interrupting that
+     *      reading wait.
+     *   7. now we start a new tailable, awaitData connection but RM system immediately goes into a furious loop
+     *      of creating cursors... until a Document is inserted into the collection.
+     */
+    "should show right-loop-like cursor producing logic" in {
+
+      val system: ActorSystem = app.injector.instanceOf[ActorSystem]
+      implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+      implicit val mat: Materializer = app.injector.instanceOf[Materializer]
+      val mongo = app.injector.instanceOf[ReactiveMongoApi]
+
+      //
+      // possibly drop the capped collection (maybe it exists, maybe it doesn't)
+      //
+      val db = Await.result(mongo.database, 5.seconds)
+      val drop = db.collection(notificationCollectionName).drop()
+      Await.result(drop, 5.seconds)
+
+      // test through a controller (trying to get closer to my official setup which is browser based SSE)
+      lazy val home = app.injector.instanceOf[HomeController]
+      val controller = home
+
+      //
+      // a Task on a timer that simulates an external system POST which inserts a document
+      // into the capped collection (The Writer)
+      //
+      val task = new Runnable {
+        override def run(): Unit = {
+          val postResult: Future[Result] = controller.generateEvent().apply(
             FakeRequest(POST, "/post")
               .withMethod("POST")
               .withJsonBody(Json.obj())
@@ -41,8 +185,10 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
         }
       }
 
+      //
+      // somewhat randomly, post a message to the capped collection within a minute (run the Writer task)
+      //
       (1 to 5).foreach(_ => {
-        // somewhat randomly, post a message to the capped collection within a minute
         system.scheduler.scheduleWithFixedDelay(
           // (1000L + 10000 * Math.random()).milliseconds,
           10.seconds,
@@ -56,10 +202,9 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
         val bodyText: String       = contentAsString(result)(Timeout(30.minutes), mat)
         bodyText mustBe "ok"
        */
-
       (1 to 10).foreach(count => {
         println(s"browser-side start SSE watching iteration ${count}")
-        val result: Future[Result] = controller.index().apply(FakeRequest())
+        val result: Future[Result] = controller.sseReadEventsUntilDone().apply(FakeRequest())
         val shouldFailBecauseOfTimeout = Try {
           val bodyText: String = contentAsString(result)(Timeout(5.minutes), mat)
           println("SHOULD NOT GET HERE")
@@ -67,13 +212,15 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
           true
         }
         println(s"browser-side expected timeout... ${shouldFailBecauseOfTimeout}")
-        //Await.ready(akka.pattern.after(1.second, system.scheduler)(Future.unit), 2.second)
-        //println("timeout - continue")
+
+        // pause... browser side does just a bit
+        Await.ready(akka.pattern.after(1.second, system.scheduler)(Future.unit), 2.second)
+        println("timeout - continue")
 
         // immediately send a new "Event"
         if (false) {
           system.scheduler.scheduleOnce(10.milliseconds) {
-            val postResult: Future[Result] = controller.post().apply(
+            val postResult: Future[Result] = controller.generateEvent().apply(
               FakeRequest(POST, "/post")
                 .withMethod("POST")
                 .withJsonBody(Json.obj())
@@ -87,4 +234,5 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
 
     }
   }
+
 }

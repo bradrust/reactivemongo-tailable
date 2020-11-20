@@ -60,7 +60,7 @@ class HomeController @Inject()(cc: ControllerComponents,
         "createdAt" -> BSONDocument("$gte" -> OffsetDateTime.now())
       ), Option.empty[BSONDocument])
       val cp = f
-        .maxTimeMs(100L)
+        // .maxTimeMs(100L)
         .comment(s"lookFor ${lookFor}")
         .tailable
         .awaitData
@@ -72,7 +72,10 @@ class HomeController @Inject()(cc: ControllerComponents,
           // println(s"mid-stream peek ${someDbMessage}/${lookFor}/${someDbMessage.map(_.contains(lookFor)).getOrElse(false)}")
           if (someDbMessage.map(_.contains(lookFor)).getOrElse(false)) {
             println(s"server-side swallowing ${lookFor}")
-            // Future.successful(x)
+            //
+            // if I don't immediately insert some junk into the collection here, then we have to wait for
+            // an external event ... which could take a long time
+            //
             c.insert(ordered = true).one(
               BSONDocument(
                 "id" -> s"prime ${lookFor}",
@@ -86,12 +89,7 @@ class HomeController @Inject()(cc: ControllerComponents,
             Future.successful(x)
           }
         })
-    })/*.recover({
-      case e => {
-        println(s"exception!! ${e.getMessage}")
-        Source.empty
-      }
-    })*/
+    })
     ).flatMapConcat(identity)
       .map(x => {
         val someDbId = x.getAsOpt[BSONString]("id").getOrElse(BSONString("whatever")).toString()
@@ -117,7 +115,7 @@ class HomeController @Inject()(cc: ControllerComponents,
 
   val ppCounter = new AtomicInteger(0)
 
-  def index() = Action { implicit request: Request[AnyContent] =>
+  def sseReadEventsUntilDone() = Action { implicit request: Request[AnyContent] =>
 
     println("server-side starting SSE documentSource watching")
 
@@ -155,7 +153,7 @@ class HomeController @Inject()(cc: ControllerComponents,
 
   val counter = new AtomicInteger(0)
 
-  def post() = Action.async { implicit request: Request[AnyContent] =>
+  def generateEvent() = Action.async { implicit request: Request[AnyContent] =>
     val nextid = counter.incrementAndGet()
     collection.map(c => {
       c.insert(ordered = true).one(
