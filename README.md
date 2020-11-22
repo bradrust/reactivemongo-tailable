@@ -1,20 +1,22 @@
-To follow the steps in this tutorial, you will need the correct version of Java and sbt. The template requires:
+Three tests from simple to a bit more complex.   The tests don't have "success" or "failure" semantics.
+Instead, they simply show some very very fast cursor creation "looping".  The second two tests show this
+looping *until* a document is inserted, then things work as expected
 
-* Java Software Developer's Kit (SE) 1.8 or higher
-* sbt 1.3.4 or higher. Note: if you downloaded this project as a zip file from <https://developer.lightbend.com>, the file includes an sbt distribution for your convenience.
+Each test case has a corresponding sequence diagram showing roughly what is happening
 
-## Build and run the project
+* sbt -mem 2048 "test:testOnly" -- -z "show some tight cursor producing logic"
+  drop collection, create collection, wait for data
+  https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgFAECGAxsOtAJJ5gjHggBekiBpqewiq40A6ojCsiBACbFgxAEbFkMWLyjkQnImQoYASgFkiHLjz5bIxMSII06DZqwC0APkXhloTgC4xPbNA4vIKmpWoDYsiI7Orqp47qSIpsAwflFBtCGMYRFKAW4xkHjISEnE2NiQYr7ZgYREeKiJ0KgAbqzUafQZrAA0kTnR7r4lZRXJfZzQFNDxZq3EeBUA7kKJGAC2cyDY8OCSkEQmM+EOuu5SIDvSUF3QxAvEYAAiksQE4KioPvBc59AAZiAoYDQVaQZDIYgAcxg+HkiESYgIdQazVauh6VVypxAEIAFkC4gloo1fr4kGgUNAABTxNBIUjQrj5ZAgFp-SiFeIASgAOngvqA+MRoGJUKR4CCuNAQMg-vgGOAAJ5SgqseHQaRK4A4mCCYQYKTIADWBF0WX81QGAG1uGRIABdKYAOmIjtIjoA4vlWCBSABFeCsBUAIXg53MiAAJCadGaUjFoNbELaHYhna6PV6hH6A4hg6HwOGo6anBj+gmbfSU2m3Z68N7s4GQ2HWEWYyXzZjy0nK06XTXMz7-Y384WCPkEQQgA
 
-This example Play project was created from a seed template. It includes all Play components and an Akka HTTP server. 
 
-To build and run the project:
+* sbt -mem 2048 "test:testOnly" -- -z "show some tight cursor producing logic prior to an documents inserted into collection"
+  drop collection, create collection, wait for data, insert some data, read some data
+  https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgPSyKQCGwMAQpAGbowAiqAxvALaR7DIBQPpzYOmgBJPGBClwIAF6REPZqi6JU4aAHVEYeXx4ATcqQBGpZDFhqogkMr4ChGAEoBZPkpVroTsvt08xCSlZeQBaAD5LcGtQZQAufVVsaCVoyBs7QNBguUQIqJjbPDjmEnIYVMLM8WzpXPyrdNjizmQkCtJsbEh9FMaMvD08VApoVAA3eVEayTr5ABoCpqK4lM7u3srl5WghaDK-DFI8XoB3bQoMNmOQbHhwcr4fUkOI1zjgUhAH4yh56FIpy+wAYRh44FQqGS8C432gNBAKGA0A4yGQpAA5jB8OZEBR9DxhqMJlNXIt+s0PiAMQALZGlMjNMY0FJINAoaAAChIaCQzGxXFaIEm8OEbRIAEoADp4GGgdSkaD6FjsTjIkDIeH4KTgACe0Bx8nx0GM+uANJgWh0GE+yAA1jxXA00gNVgBtYCIASQAC6+wAdKR-cx-QBxTjyEDMACK8Hkuso8G+hwAJI6XM6qsVoB6vfy-YhA8GwxHtDG44gE0nwKn05nttnc96C0WQ+G8JHy-HE8n5GmnZEKSsc57mwGg23S1HY93q7XOASeFbLvXXQa8LjkcrWBwuISRjASRhlwtnoc4sp+QClSrd+rNYa8T1-pBJpXzfgMWNul6KJrjr05iQGwmrDIg1zgHWg4upS+y+DeO5qlBZ7yKsPLYMo5gIaqe4nnk0FZqsj5breSEDksa4HNhd7Ib4qFwcgGEbjA244cAfBAA
 
-1. Use a command window to change into the example project directory
 
-2. Build the project. Enter: `sbt run`. The project builds and starts the embedded HTTP server. 
+* sbt -mem 2048 "test:testOnly" -- -z "should show right-loop-like cursor producing logic"
+  drop collection, create collection, wait for data, insert some data, read some data
+  https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgPSyKQCGwMAQpAGbowAiqAxvALaR7DIBQPpzYOmgBJPGBClwIAF6REPACblSAI1LIYsVOCiCQqPP0HCASgFkezQ8EQ7oAQQDWT0lZt3w0U2UXz3XJ7QAOqIYP6qqPB4yogAntCUdgDumgqR0bEJAKIAHhSIeFLZAG6cwHxiElKy8gC0AHzaupD6hgBcinbY0NYtbUZVoDVyiI3NeqAdzCTkMH2TBoPiw9Kj4zqLHZzISPOk2NiQir2brVNGPHioFNCoZRhDkmvyADQT50vtvQdHJwufQx8JKoVL1Bo+Uh+RDtTCYbJ3DDgQwAczq0jKJ1mih4kOhjQs7WApBA4DUUFe0FIyRJwAYKj4KLs8B6yTCt1IMWg2KpXOw8FU0mQAAseHkCkVwKVyo1QuEYdAUZx5HNoJAylweHKCht+hdvvg0sBoIoWOxyrjzLqtnhvjzTawOJqLATfPI7ZBkNhDJoTWanRU8eCQWCFXCEQAiaVcCM8TgnPjXW73eTeN2IV7i+SS6PAb6qVqkeC+iNiCWQYAR6DJUleaRsMDQKB4FHAYUEUAcAA6eDuNCw8NOeDwgLwlJE1c5xqE0HwBUQLOAPc5WM9xMQ0+FMGSwp0MAjqhSaW5vnwKJ7HGQyFISuQTdQqGwEZ7PYAKqg-dA2+Rx9AnLWvy3XokDQDAd04WdjWxZBl2gCNvRANBe1wXQqwdc0uGrYUQGYYU1S4eQYK4ICAQGaAaDsNheUcFxSCwKJEGYSAe2QWwyCo8p4mgdRNBOQwvxADhoAACgANgABmgTRrBiZAAEo+B4EM0ldKF3XDRF7xbdEQExE8oVxdMCXMIkSTJQVIEpalaXpYkeGcVxrVHdpSBoApoAkqTWkMRRkEpNlwjghCkOgFDwFjF0mjOAYPShP1HXKETgv4sKFMioMFXtf0LQy1ToW+ZAaV0UFQtQRCUtrQy1LGBplPdaA8iY7ALiIZFNCUo9wQy9oR3ySCVQuAdsiq-EIRM4lSXJSyqRpMBbLcZFH2gaJQC8S9ryVWc8CNY4rhuGAUwwCx3mi-UBJRYVjRmMhBtQftWBQdAiOEkg0CQJitoobbdJgOgMF2Eg5J7FbSSpeKMONRCtp2nFIo+GLoAAbVsARIAAXW5AA6UhMeYTGAHFlTCZgAEV4HkOJKHgUloQAEktJyEeRxBUYxxBsdxgmiZwsmKapmn5HpuHTq+JGUaYtmObxwmR2J3n4n58A6YZqK9VF5nWaxnHpe50nyYV6mlcFuMYjFfJs2KDVgFldl6qVWXVXVC1tXBeGzsNeRjXQgM9uTB402qk61Y6aBrmSQDyDBkdw4dANZzvD2N2OKzdEcEwUB7fASh0PTHwGmBrkQNgpHAOJMcZZlWVt3lVzildQoFIVRSzQpLZlBoXYVe387VK2tVtmq3dFxOvey50rVVm1YpOb2con7qTy9H0YFn50jNqzqw0HKMrdjeNoB4IA
 
-3. After the message `Server started, ...` displays, enter the following URL in a browser: <http://localhost:9000>
 
-4. From a command line with curl: post a message which should be echoed to the browser forever-loading-page from step 3.
-      curl  --request POST http://localhost:9000/post --data '{}'
-      
+
