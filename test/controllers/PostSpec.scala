@@ -24,9 +24,98 @@ import scala.util.Try
 
 class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures with Results {
 
+  val notificationCollectionName = "notifications"
+
+
+  //
+  // this collection Future is how I am creating a collection in my classes and flatMap-ing when using it
+  //
+  def collection: Future[reactivemongo.api.bson.collection.BSONCollection] = {
+    val system: ActorSystem = app.injector.instanceOf[ActorSystem]
+    implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+    implicit val mat: Materializer = app.injector.instanceOf[Materializer]
+    val mongo = app.injector.instanceOf[ReactiveMongoApi]
+
+    val rv = (for {
+      db <- mongo.database
+      collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
+      rv <- collection.stats().flatMap(stats => {
+        if (!stats.capped) {
+          collection.convertToCapped(5 * 1024 * 1024, Option(5000))
+            .map(_ => collection)
+        } else {
+          Future.successful(collection)
+        }
+      })
+    } yield {
+      rv
+    }).recoverWith {
+      case _ =>
+        // collection probably doesn't exist so lets go make it.
+        mongo.database.flatMap(db => {
+          def collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
+          collection.createCapped(5 * 1024 * 1024, Option(5000)).map(_ => collection)
+        })
+    }
+    rv
+  }
+
+  def dropCollection = {
+    val system: ActorSystem = app.injector.instanceOf[ActorSystem]
+    implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+    implicit val mat: Materializer = app.injector.instanceOf[Materializer]
+    val mongo = app.injector.instanceOf[ReactiveMongoApi]
+
+    //
+    // possibly drop the capped collection (maybe it exists, maybe it doesn't)
+    //
+    val db = Await.result(mongo.database, 20.seconds)
+    val drop = db.collection(notificationCollectionName).drop()
+    Await.result(drop, 5.seconds)
+  }
+
+
   "cursor-spin" should {
 
-    val notificationCollectionName = "notifications"
+    /**
+     * sequencediagram.org URL for some swimlane views of this...
+     *
+     * https://sequencediagram.org/index.html?presentationMode=readOnly#initialData=C4S2BsFMAIGEFcBOBnA9o6BlADiAdgFAECGAxsOtAJJ5gjHggBekiBpqewiq40A6ojCsiBACbFgxAEbFkMWLyjkQnImQoYASgFkiHLjz5bIxMSII06DZqwC0APkXhloTgC4xPbNA4vIKmpWoDYsiI7Orqp47qSIpsAwflFBtCGMYRFKAW4xkHjISEnE2NiQYr7ZgYREeKiJ0KgAbqzUafQZrAA0kTnR7r4lZRXJfZzQFNDxZq3EeBUA7kKJGAC2cyDY8OCSkEQmM+EOuu5SIDvSUF3QxAvEYAAiksQE4KioPvBc59AAZiAoYDQVaQZDIYgAcxg+HkiESYgIdQazVauh6VVypxAEIAFkC4gloo1fr4kGgUNAABTxNBIUjQrj5ZAgFp-SiFeIASgAOngvqA+MRoGJUKR4CCuNAQMg-vgGOAAJ5SgqseHQaRK4A4mCCYQYKTIADWBF0WX81QGAG1uGRIABdKYAOmIjtIjoA4vlWCBSABFeCsBUAIXg53MiAAJCadGaUjFoNbELaHYhna6PV6hH6A4hg6HwOGo6anBj+gmbfSU2m3Z68N7s4GQ2HWEWYyXzZjy0nK06XTXMz7-Y384WCPkEQQgA
+     *
+     * In general,
+     *   1. start by dropping the collection and creating a new one for cleanliness.   The collection
+     *      is created as a capped collection.
+     *   2. start a read of the capped collection.
+     *   3. notice that the RM (or something) system furiously creating cursors.
+     */
+    "show some tight cursor producing logic" in {
+
+      val system: ActorSystem = app.injector.instanceOf[ActorSystem]
+      implicit val executionContext = app.injector.instanceOf[ExecutionContext]
+      implicit val mat: Materializer = app.injector.instanceOf[Materializer]
+      val mongo = app.injector.instanceOf[ReactiveMongoApi]
+
+      dropCollection
+      Await.result(collection, 10.seconds)
+
+      //
+      // wait for capped collection data (The Reader)
+      //
+      val byDateSelector = BSONDocument("createdAt" -> BSONDocument("$gte" -> OffsetDateTime.now()))
+      val allSelector = BSONDocument.empty
+      val x = collection.flatMap(c => {
+        c.find(allSelector)
+          .tailable
+          .awaitData
+          .cursor[BSONDocument]()
+          .documentSource()
+          .runWith(akka.stream.scaladsl.Sink.foreach { doc =>
+            println(s"- ${BSONDocument pretty doc}")
+          })
+      })
+      Await.result(x, 60.seconds)
+    }
+
 
     /**
      * sequencediagram.org URL for some swimlane views of this...
@@ -49,40 +138,7 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
       implicit val mat: Materializer = app.injector.instanceOf[Materializer]
       val mongo = app.injector.instanceOf[ReactiveMongoApi]
 
-      //
-      // possibly drop the capped collection (maybe it exists, maybe it doesn't)
-      //
-      val db = Await.result(mongo.database, 5.seconds)
-      val drop = db.collection(notificationCollectionName).drop()
-      Await.result(drop, 5.seconds)
-
-      //
-      // this collection Future is how I am creating a collection in my classes and flatMap-ing when using it
-      //
-      def collection: Future[reactivemongo.api.bson.collection.BSONCollection] = {
-        val rv = (for {
-          db <- mongo.database
-          collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
-          rv <- collection.stats().flatMap(stats => {
-            if (!stats.capped) {
-              collection.convertToCapped(5 * 1024 * 1024, Option(5000))
-                .map(_ => collection)
-            } else {
-              Future.successful(collection)
-            }
-          })
-        } yield {
-          rv
-        }).recoverWith {
-          case _ =>
-            // collection probably doesn't exist so lets go make it.
-            mongo.database.flatMap(db => {
-              def collection = db.collection[reactivemongo.api.bson.collection.BSONCollection](notificationCollectionName)
-              collection.createCapped(5 * 1024 * 1024, Option(5000)).map(_ => collection)
-            })
-        }
-        rv
-      }
+      dropCollection
       Await.result(collection, 10.seconds)
 
       //
@@ -159,12 +215,7 @@ class PostSpec extends PlaySpec with GuiceOneServerPerSuite with ScalaFutures wi
       implicit val mat: Materializer = app.injector.instanceOf[Materializer]
       val mongo = app.injector.instanceOf[ReactiveMongoApi]
 
-      //
-      // possibly drop the capped collection (maybe it exists, maybe it doesn't)
-      //
-      val db = Await.result(mongo.database, 5.seconds)
-      val drop = db.collection(notificationCollectionName).drop()
-      Await.result(drop, 5.seconds)
+      dropCollection
 
       // test through a controller (trying to get closer to my official setup which is browser based SSE)
       lazy val home = app.injector.instanceOf[HomeController]
